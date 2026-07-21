@@ -1,0 +1,32 @@
+{
+    "device_name": "CrystaL",
+    "ip_address": "192.168.1.5",
+    "os_version": "Windows 10",
+    "model_used": "random_forest",
+    "cve_id": "CVE-2026-12345",
+    "epss_score": 0.051043,
+    "risk_level": "🟡 TRUNG BÌNH (1–10%)",
+    "base_severity": "LOW",
+    "details": {
+        "attack_vector": "LOCAL",
+        "attack_complexity": "HIGH",
+        "privileges_required": "HIGH",
+        "user_interaction": "REQUIRED",
+        "scope": "UNCHANGED",
+        "confidentiality": "NONE",
+        "integrity": "LOW",
+        "availability": "NONE",
+        "cwe_id": "CWE-200",
+        "base_score": 2.4
+    },
+    "reasons": {
+        "av_reason": "Lỗ hổng chỉ có thể bị khai thác khi kẻ tấn công đã có quyền truy cập cục bộ vào máy tính (Local), không thể thực hiện từ xa qua mạng.",
+        "ac_reason": "Điều kiện khai thác phức tạp (High), yêu cầu kẻ tấn công phải chuẩn bị môi trường phù hợp và thực hiện nhiều bước trước khi khai thác thành công.",
+        "pr_reason": "Yêu cầu quyền truy cập đặc biệt trước khi khai thác (High), kẻ tấn công cần có tài khoản hợp lệ với quyền hạn nhất định trên hệ thống.",
+        "ui_reason": "Cần sự tương tác của người dùng (Required), ví dụ người dùng phải mở một file hoặc thực hiện một hành động cụ thể thì lỗ hổng mới được kích hoạt.",
+        "ci_reason": "Lỗ hổng có thể làm lộ một lượng nhỏ thông tin không nhạy cảm trên hệ thống, nhưng không ảnh hưởng tới dữ liệu quan trọng.",
+        "i_reason": "Kẻ tấn công có thể thực hiện thay đổi nhỏ đối với một số dữ liệu cục bộ, tuy nhiên không thể chỉnh sửa các thành phần quan trọng của hệ thống.",
+        "a_reason": "Không gây ảnh hưởng đáng kể tới khả năng hoạt động của hệ thống, dịch vụ vẫn có thể tiếp tục vận hành bình thường.",
+        "technical_impact_reason": "Lỗ hổng chỉ gây tác động hạn chế, không cho phép thực thi mã từ xa (RCE), không cung cấp quyền kiểm soát hệ thống và không ảnh hưởng nghiêm trọng tới tính bảo mật, toàn vẹn hoặc khả dụng."
+    }
+}

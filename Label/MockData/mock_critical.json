@@ -1,0 +1,14 @@
+{
+    "cve_id": "MOCK-CRITICAL",
+    "base_score": 9.8,
+    "av_label": "NETWORK",
+    "ac_label": "LOW",
+    "pr_label": "NONE",
+    "ui_label": "NONE",
+    "scope_label": "CHANGED",
+    "c_label": "HIGH",
+    "i_label": "HIGH",
+    "a_label": "HIGH",
+    "severity_label": "CRITICAL",
+    "cwe_id": "CWE-400"
+}

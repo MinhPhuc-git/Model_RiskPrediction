@@ -1,0 +1,14 @@
+{
+    "cve_id": "MOCK-SAFE",
+    "base_score": 1.0,
+    "av_label": "LOCAL",
+    "ac_label": "HIGH",
+    "pr_label": "HIGH",
+    "ui_label": "REQUIRED",
+    "scope_label": "UNCHANGED",
+    "c_label": "NONE",
+    "i_label": "NONE",
+    "a_label": "NONE",
+    "severity_label": "LOW",
+    "cwe_id": "CWE-20"
+}

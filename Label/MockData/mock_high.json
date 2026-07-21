@@ -1,0 +1,14 @@
+{
+    "cve_id": "MOCK-HIGH",
+    "base_score": 7.5,
+    "av_label": "NETWORK",
+    "ac_label": "LOW",
+    "pr_label": "LOW",
+    "ui_label": "NONE",
+    "scope_label": "UNCHANGED",
+    "c_label": "HIGH",
+    "i_label": "LOW",
+    "a_label": "LOW",
+    "severity_label": "HIGH",
+    "cwe_id": "CWE-89"
+}

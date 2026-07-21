@@ -1,0 +1,14 @@
+{
+    "cve_id": "MOCK-MEDIUM",
+    "base_score": 5.0,
+    "av_label": "ADJACENT_NETWORK",
+    "ac_label": "LOW",
+    "pr_label": "LOW",
+    "ui_label": "REQUIRED",
+    "scope_label": "UNCHANGED",
+    "c_label": "LOW",
+    "i_label": "LOW",
+    "a_label": "NONE",
+    "severity_label": "MEDIUM",
+    "cwe_id": "CWE-79"
+}
