@@ -1,19 +1,3 @@
-"""
-XGBoost cho dự đoán exploited=0/1 -- retuned cho Main_Data_Train.csv thực tế.
-
-THAY ĐỔI SO VỚI BẢN CŨ (vốn tune cho giả định mất cân bằng 93.86/6.14):
-  - Mất cân bằng thực tế của Main_Data_Train.csv chỉ ~75/25 (n_neg/n_pos ~ 3.0,
-    không phải ~15.28). scale_pos_weight giờ tính ĐỘNG từ y_train thật, không
-    còn hardcode/giả định theo dataset cũ.
-  - Không gian feature tăng lên 12 cột (thêm cvss_version, base_score) để xử lý
-    việc dữ liệu trộn nhiều phiên bản CVSS (v2/v3.0/v3.1/v4) có thang đo khác
-    nhau. max_depth nới nhẹ 3 -> 4 vì: (a) mất cân bằng nhẹ hơn nên tín hiệu ít
-    nhiễu hơn, (b) cần thêm 1-2 mức để bắt tương tác với cvss_version.
-  - XGBoost xử lý NaN tự nhiên (missing=np.nan mặc định) cho các dòng CVSS v4
-    thiếu exploitability/impact_score, thay vì để lẫn giá trị -1 giả.
-  - Vẫn giữ early stopping theo aucpr + calibrate isotonic + regularization
-    vừa phải để tránh overfit trên tập ~86k dòng.
-"""
 import numpy as np
 # pyrefly: ignore [missing-import]
 from xgboost import XGBClassifier as XGBoostModel
@@ -29,9 +13,9 @@ class XGBoostOOP(BaseModelOOP):
         super().__init__(name="xgboost", output_dir=output_dir)
         self.best_iteration_ = None
         self.model = XGBoostModel(
-            n_estimators=500,
+            n_estimators=1000,
             max_depth=12,
-            learning_rate=0.05,
+            learning_rate=0.04,
             subsample=0.9,
             colsample_bytree=0.9,
             min_child_weight=1,
@@ -41,7 +25,7 @@ class XGBoostOOP(BaseModelOOP):
             objective="binary:logistic",
             eval_metric="aucpr",
             scale_pos_weight=scale_pos_weight * 15.0,
-            early_stopping_rounds=50,
+            early_stopping_rounds=99,
             random_state=42,
             verbosity=0,
             n_jobs=-1,

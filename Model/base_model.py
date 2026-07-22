@@ -58,24 +58,17 @@ CATEGORICAL_FEATURES = [
     "CVSS_confidentiality",
     "CVSS_integrity",
     "CVSS_availability",
-    "CVSS_cvss_version",   # THÊM MỚI: bắt buộc phải có, vì exploitability/impact_score
-                           # khác thang đo hoàn toàn giữa CVSS v2 và v3.x/v4. Đưa version
-                           # vào feature để cây học điều kiện theo từng phiên bản.
+    "CVSS_cvss_version",   
 ]
 
 NUMERICAL_FEATURES = [
     "CVSS_exploitability_score",
     "CVSS_impact_score",
-    "CVSS_base_score",     # THÊM MỚI: là điểm duy nhất còn tương đối nhất quán (thang 0-10)
-                           # qua mọi phiên bản CVSS, dùng làm neo tham chiếu chung.
+    "CVSS_base_score",     
 ]
 
 BINARY_FEATURES: list[str] = []
 
-# Cột loại bỏ: mọi cột KEV_*/MS_*/ExploitDB_* (rò rỉ nhãn vì LÀ NGUỒN GỐC của nhãn),
-# CVSS_earliest_exploit_date (rò rỉ nhãn: 94% label=1 có ngày này vs 7% label=0),
-# CVSS_cwe_id (cardinality cao ~487 giá trị -> dễ overfit),
-# các cột text/mô tả/ngày không phải feature số.
 _LEAK_PREFIXES = ("KEV_", "MS_", "ExploitDB_")
 DROP_EXTRA_COLS = [
     "CVE_ID", "CVSS_cwe_id", "CVSS_vector_string", "CVSS_description",
@@ -279,12 +272,12 @@ class Predictor:
             "Risk": classify_risk(probability)
         }
 
-        print("\n==============================")
+        print("\n")
         print(" Prediction Result")
         print("==============================")
         print("CVE :", result["CVE_ID"])
-        print("Probability :", f"{probability*100:.2f}%")
-        print("Prediction :", "EXPLOITED" if prediction else "NOT EXPLOITED")
+        print("Attack Probability :", f"{probability*100:.2f}%")
+        print("Prediction (Exploit):", "EXPLOITED" if prediction else "NOT EXPLOITED")
         print("Risk :", result["Risk"])
         print("==============================\n")
 
