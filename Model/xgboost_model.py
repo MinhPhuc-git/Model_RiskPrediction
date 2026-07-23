@@ -14,7 +14,7 @@ class XGBoostOOP(BaseModelOOP):
         self.best_iteration_ = None
         self.model = XGBoostModel(
             n_estimators=1000,
-            max_depth=12,
+            max_depth=12, 
             learning_rate=0.04,
             subsample=0.9,
             colsample_bytree=0.9,

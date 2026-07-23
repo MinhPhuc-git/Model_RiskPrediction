@@ -1,7 +1,3 @@
-"""
-Centralized file paths for the Agent-CollectionData project.
-Cập nhật sang dataset v2 (cve_epss_merged_v2_light.csv).
-"""
 import os
 
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))          # Sever/Model
@@ -9,8 +5,7 @@ SEVER_DIR   = os.path.dirname(BASE_DIR)                           # Sever
 PROJECT_DIR = os.path.dirname(SEVER_DIR)                          # AGENT-COLLECTIONDATA
 
 # ── Dataset paths ──
-CSV_PATH       = os.path.join(PROJECT_DIR, "Merge DATA", "cve_epss_merged_v2_light.csv")
-REFERENCE_PATH = os.path.join(PROJECT_DIR, "Model Train", "Data Train", "cve_reference.csv")
+CSV_PATH = os.path.join(PROJECT_DIR, "Model Train", "Data Train" , "Main_Data_Train.csv")
 AGENT_JSON_PATH = os.path.join(PROJECT_DIR, "Model Train", "Label", "agent_data_labeled.json")
 
 # ── Model result directory ──

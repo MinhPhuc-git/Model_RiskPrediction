@@ -41,7 +41,7 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_DIR = os.path.abspath(os.path.join(_BASE_DIR, "..", ".."))
 
 # Các đường dẫn chuẩn trong dự án
-DATA_TRAIN_CSV = os.path.join(_PROJECT_DIR, "Model Train", "Data Train", "Main_Data_Train.csv")
+DATA_TRAIN_CSV = os.path.join(_PROJECT_DIR, "Model Train", "Data Train", "Full_CVE_Dataset_with_Exploited_Label.csv")
 OUTPUT_DIR     = os.path.join(_PROJECT_DIR, "Model Train", "Model Result")
 LABELED_JSON   = os.path.join(_PROJECT_DIR, "Model Train", "Label", "agent_data_labeled.json")  # File input
 PREDICT_DIR    = os.path.join(_PROJECT_DIR, "Model Train", "Data User")                         # Folder output
