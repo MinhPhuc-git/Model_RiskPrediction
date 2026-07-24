@@ -153,17 +153,29 @@ The input can be:
 Windows (PowerShell)
 
 ```powershell
+<<<<<<< HEAD
 python ".\CTI_Collector\cti_collector.py" `
     --input ".\CTI_Collector\cve_list.txt" `
     --outdir ".\CTI_Collector\cve_data"
+=======
+python ".\CTI Collector\cti_collector.py" `
+    --input ".\CTI Collector\cve_list.txt" `
+    --outdir ".\CTI Collector\cve_data"
+>>>>>>> master
 ```
 
 Linux / macOS
 
 ```bash
+<<<<<<< HEAD
 python "./CTI_Collector/cti_collector.py" \
     --input "./CTI_Collector/cve_list.txt" \
     --outdir "./CTI_Collector/cve_data"
+=======
+python "./CTI Collector/cti_collector.py" \
+    --input "./CTI Collector/cve_list.txt" \
+    --outdir "./CTI Collector/cve_data"
+>>>>>>> master
 ```
 
 Features
