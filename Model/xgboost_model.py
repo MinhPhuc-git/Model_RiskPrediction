@@ -79,7 +79,7 @@ def main():
           f"Brier={metrics['brier_score']:.4f}  LogLoss={metrics['log_loss']:.4f}")
 
     print("\n--- Classification Report (threshold=0.5) ---")
-    print(model.classification_report_str(loader.X_test, loader.y_test, threshold=0.5))
+    print(model.classification_report_str(loader.X_test, loader.y_test, threshold=0.6))
 
     # feature importance
     import pandas as pd
