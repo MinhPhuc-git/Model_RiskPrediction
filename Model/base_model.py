@@ -1,14 +1,3 @@
-"""
-Base module cho model dự đoán "khả năng bị khai thác" (exploited).
-Retuned cho Main_Data_Train.csv (86,052 dòng, schema mới KEV/MS/ExploitDB/CVSS).
-
-Nhãn: `Exploited_Label` = OR(KEV_Listed_Flag, MS_Exploited_Flag, ExploitDB_Verified_Flag)
-  -> mọi cột KEV_*/MS_*/ExploitDB_* RÒ RỈ NHÃN TUYỆT ĐỐI, không được dùng làm feature.
-  -> Chỉ dùng các cột CVSS_* (độc lập với cách gán nhãn) làm feature.
-
-Mất cân bằng thực tế: 75% (0) / 25% (1) -- KHÁC với giả định cũ (93.86/6.14).
-scale_pos_weight phải tính động từ y_train, không hardcode.
-"""
 import os
 import json
 import warnings
@@ -22,6 +11,7 @@ from sklearn.metrics import (
     roc_auc_score, average_precision_score,
     confusion_matrix, classification_report,
     brier_score_loss, log_loss,
+    precision_recall_curve,
 )
 from sklearn.calibration import CalibratedClassifierCV
 
@@ -32,16 +22,8 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Lùi 2 cấp thư mục để về thư mục gốc: .../Agent-CollectionData
 _PROJECT_DIR = os.path.abspath(os.path.join(_BASE_DIR, "..", ".."))
 
-# Trỏ chính xác vào thư mục Model Train ở gốc dự án
-import os
-
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# Lùi 2 cấp thư mục để về thư mục gốc: .../Agent-CollectionData
-_PROJECT_DIR = os.path.abspath(os.path.join(_BASE_DIR, "..", ".."))
-
 # Các đường dẫn chuẩn trong dự án
-DATA_TRAIN_CSV = os.path.join(_PROJECT_DIR, "Model Train", "Data Train", "Main_Data_Train.csv")
+DATA_TRAIN_CSV = os.path.join(_PROJECT_DIR, "Model Train", "Data Train", "350k-Data_HasExploited.csv")
 OUTPUT_DIR     = os.path.join(_PROJECT_DIR, "Model Train", "Model Result")
 LABELED_JSON   = os.path.join(_PROJECT_DIR, "Model Train", "Label", "agent_data_labeled.json")  # File input
 PREDICT_DIR    = os.path.join(_PROJECT_DIR, "Model Train", "Data User")                         # Folder output
@@ -58,24 +40,16 @@ CATEGORICAL_FEATURES = [
     "CVSS_confidentiality",
     "CVSS_integrity",
     "CVSS_availability",
-    "CVSS_cvss_version",   # THÊM MỚI: bắt buộc phải có, vì exploitability/impact_score
-                           # khác thang đo hoàn toàn giữa CVSS v2 và v3.x/v4. Đưa version
-                           # vào feature để cây học điều kiện theo từng phiên bản.
 ]
 
 NUMERICAL_FEATURES = [
     "CVSS_exploitability_score",
     "CVSS_impact_score",
-    "CVSS_base_score",     # THÊM MỚI: là điểm duy nhất còn tương đối nhất quán (thang 0-10)
-                           # qua mọi phiên bản CVSS, dùng làm neo tham chiếu chung.
+    "CVSS_base_score",
 ]
 
 BINARY_FEATURES: list[str] = []
 
-# Cột loại bỏ: mọi cột KEV_*/MS_*/ExploitDB_* (rò rỉ nhãn vì LÀ NGUỒN GỐC của nhãn),
-# CVSS_earliest_exploit_date (rò rỉ nhãn: 94% label=1 có ngày này vs 7% label=0),
-# CVSS_cwe_id (cardinality cao ~487 giá trị -> dễ overfit),
-# các cột text/mô tả/ngày không phải feature số.
 _LEAK_PREFIXES = ("KEV_", "MS_", "ExploitDB_")
 DROP_EXTRA_COLS = [
     "CVE_ID", "CVSS_cwe_id", "CVSS_vector_string", "CVSS_description",
@@ -83,19 +57,58 @@ DROP_EXTRA_COLS = [
 ]
 
 
-def classify_risk(prob_exploited: float) -> str:
-    if prob_exploited >= 0.9:
-        return "RẤT CAO (>= 90%)"
-    elif prob_exploited >= 0.7:
-        return "CAO (70-89%)"
-    elif prob_exploited >= 0.4:
-        return "TRUNG BÌNH (40-69%)"
+def compute_risk_thresholds(proba, percentiles: tuple = (70, 90, 97)) -> dict:
+    p_medium, p_high, p_critical = percentiles
+    return {
+        "medium_threshold":   float(np.quantile(proba, p_medium / 100.0)),
+        "high_threshold":     float(np.quantile(proba, p_high / 100.0)),
+        "critical_threshold": float(np.quantile(proba, p_critical / 100.0)),
+        "percentiles_used": {"medium": p_medium, "high": p_high, "critical": p_critical},
+    }
+
+
+def classify_risk(prob_exploited: float, thresholds: dict | None = None) -> str:
+    """Trả về nhãn rủi ro gọn gàng, không kèm text dài dòng vì đã có percentile tính riêng"""
+    if thresholds is None:
+        if prob_exploited >= 0.9:
+            return "RẤT CAO"
+        elif prob_exploited >= 0.7:
+            return "CAO"
+        elif prob_exploited >= 0.4:
+            return "TRUNG BÌNH"
+        else:
+            return "THẤP"
+
+    critical_t = thresholds["critical_threshold"]
+    high_t = thresholds["high_threshold"]
+    medium_t = thresholds["medium_threshold"]
+
+    if prob_exploited >= critical_t:
+        return "RẤT CAO"
+    elif prob_exploited >= high_t:
+        return "CAO"
+    elif prob_exploited >= medium_t:
+        return "TRUNG BÌNH"
     else:
-        return "THẤP (< 40%)"
+        return "THẤP"
+
+
+def find_best_threshold(y_true, proba, metric: str = "f1", beta: float = 1.0) -> dict:
+    precisions, recalls, thresholds = precision_recall_curve(y_true, proba)
+    # precision_recall_curve trả về len(thresholds) = len(precisions) - 1
+    b2 = beta ** 2
+    f_scores = (1 + b2) * precisions * recalls / (b2 * precisions + recalls + 1e-12)
+    best_idx = int(np.argmax(f_scores[:-1])) if len(f_scores) > 1 else 0
+    return {
+        "threshold": float(thresholds[best_idx]) if len(thresholds) > 0 else 0.5,
+        "precision": float(precisions[best_idx]),
+        "recall": float(recalls[best_idx]),
+        "f1": float(f_scores[best_idx]),
+    }
 
 
 class DataLoaderV4:
-    """Load Main_Data_Train.csv, làm sạch, encode, stratified split."""
+    """Load 350k-Data_HasExploited.csv, làm sạch, encode, stratified split."""
 
     def __init__(self, csv_path: str = DATA_TRAIN_CSV):
         self.csv_path = csv_path
@@ -105,6 +118,13 @@ class DataLoaderV4:
         self.y_train = self.y_test = None
 
     def load(self, test_size: float = 0.2, random_state: int = 42):
+        if not os.path.isfile(self.csv_path):
+            raise FileNotFoundError(
+                f"[DataLoaderV4] Khong tim thay file train tai:\n  {self.csv_path}\n"
+                f"-> Kiem tra lai file 350k-Data_HasExploited.csv da duoc dat dung "
+                f"vao thu muc 'Model Train/Data Train/' chua, hoac truyen csv_path "
+                f"khac khi khoi tao DataLoaderV4(csv_path=...)."
+            )
         df = pd.read_csv(self.csv_path, low_memory=False)
 
         # ── Drop cột rò rỉ nhãn + cột không dùng ──
@@ -143,7 +163,11 @@ class DataLoaderV4:
         )
 
     def scale_pos_weight(self) -> float:
-        """n_neg / n_pos tính ĐỘNG trên y_train thực tế (không hardcode)."""
+        """
+        n_neg / n_pos tính ĐỘNG trên y_train thực tế (không hardcode).
+        LƯU Ý: giá trị trả về đã đủ để bù mất cân bằng lớp — KHÔNG nhân thêm
+        bất kỳ hệ số nào nữa ở nơi gọi hàm này (xem TUNING NOTES ở đầu file).
+        """
         n_pos = max(int(self.y_train.sum()), 1)
         n_neg = len(self.y_train) - n_pos
         return n_neg / n_pos
@@ -170,6 +194,11 @@ class BaseModelOOP:
     def predict_proba(self, X) -> np.ndarray:
         proba = self._active_model().predict_proba(X)[:, 1]
         return np.clip(proba, 0.0, 1.0)
+
+    def find_best_threshold(self, X, y, metric: str = "f1", beta: float = 1.0) -> dict:
+        """Wrapper tiện dụng: tính proba trên (X, y) rồi tìm threshold tối ưu."""
+        proba = self.predict_proba(X)
+        return find_best_threshold(y, proba, metric=metric, beta=beta)
 
     def evaluate(self, X_test, y_test) -> dict:
         proba = self.predict_proba(X_test)
@@ -216,13 +245,16 @@ class BaseModelOOP:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(metrics, f, indent=2, ensure_ascii=False)
         return path
-    
+
+
 class Predictor:
     def __init__(self,
                  model_path: str,
                  encoder_path: str,
-                 feature_names: list):
-
+                 feature_names: list,
+                 threshold: float = 0.5,
+                 risk_thresholds: dict | None = None,
+                 reference_probs: list | None = None):
         with open(model_path, "rb") as f:
             self.model = pickle.load(f)
 
@@ -230,9 +262,18 @@ class Predictor:
             self.encoders = pickle.load(f)
 
         self.feature_names = feature_names
+        self.threshold = threshold
+        self.risk_thresholds = risk_thresholds
+        
+        # Lưu phân phối xác suất từ validation để tính percentile
+        self.reference_probs = reference_probs or []
+
+    def get_percentile(self, probability: float) -> float:
+        if not self.reference_probs:
+            return 0.0
+        return float((np.array(self.reference_probs) <= probability).mean() * 100)
 
     def _prepare(self, data: dict):
-
         row = {
             "CVSS_attack_vector": data["av_label"],
             "CVSS_attack_complexity": data["ac_label"],
@@ -242,12 +283,14 @@ class Predictor:
             "CVSS_confidentiality": data["c_label"],
             "CVSS_integrity": data["i_label"],
             "CVSS_availability": data["a_label"],
-            "CVSS_cvss_version": data["cvss_version"],
 
             "CVSS_exploitability_score": data["exploitability_score"],
             "CVSS_impact_score": data["impact_score"],
             "CVSS_base_score": data["base_score"]
         }
+
+        # giữ lại giá trị gốc (trước encode) để show trong "reasons"
+        raw_values = dict(row)
 
         for col in CATEGORICAL_FEATURES:
             le = self.encoders[col]
@@ -259,33 +302,96 @@ class Predictor:
         df = pd.DataFrame([row])
         X = df[self.feature_names].values.astype(float)
 
-        return X
+        return X, raw_values
+
+    def _get_feature_importance(self) -> dict:
+        model = self.model
+        importances = None
+
+        # Trường hợp 1: model trực tiếp có feature_importances_ (XGBoost, RF, ...)
+        if hasattr(model, "feature_importances_"):
+            importances = np.array(model.feature_importances_, dtype=float)
+
+        # Trường hợp 2: model là CalibratedClassifierCV -> lấy các estimator con
+        elif hasattr(model, "calibrated_classifiers_"):
+            all_imps = []
+            for cc in model.calibrated_classifiers_:
+                base = getattr(cc, "estimator", None) or getattr(cc, "base_estimator", None)
+                if base is not None and hasattr(base, "feature_importances_"):
+                    all_imps.append(np.array(base.feature_importances_, dtype=float))
+            if all_imps:
+                importances = np.mean(all_imps, axis=0)
+
+        if importances is None:
+            # Model không hỗ trợ feature_importances_ (vd: SVM, LogisticRegression thường)
+            return {}
+
+        if importances.sum() > 0:
+            importances = importances / importances.sum()
+
+        return dict(zip(self.feature_names, importances.tolist()))
 
     def predict_json(self, json_path: str):
-
         with open(json_path, "r", encoding="utf8") as f:
             data = json.load(f)
 
-        X = self._prepare(data)
+        X, raw_values = self._prepare(data)
 
         probability = float(self.model.predict_proba(X)[0][1])
+        prediction = int(probability >= self.threshold)
+        
+        # ── Tính Percentile và Risk ──
+        percentile = self.get_percentile(probability)
+        risk = classify_risk(probability, self.risk_thresholds)
 
-        prediction = int(probability >= 0.5)
+        # ── Tính "trọng số nguyên nhân" cho nhãn này ──
+        importance_map = self._get_feature_importance()
+
+        reasons = []
+        for feat in self.feature_names:
+            reasons.append({
+                "feature": feat,
+                "value": raw_values.get(feat),
+                "importance_weight": round(importance_map.get(feat, 0.0), 6),
+            })
+        # sắp xếp theo trọng số giảm dần -> nguyên nhân ảnh hưởng nhiều nhất lên trên
+        reasons.sort(key=lambda r: r["importance_weight"], reverse=True)
 
         result = {
             "CVE_ID": data["cve_id"],
             "Probability": round(probability, 4),
+            "Percentile": round(percentile, 2) if self.reference_probs else None,
+            "Threshold_Used": self.threshold,
             "Prediction": prediction,
-            "Risk": classify_risk(probability)
+            "Risk": risk,
+            "Risk_Thresholds_Used": self.risk_thresholds,
+            "Reasons": reasons,
         }
 
-        print("\n==============================")
+        print("\n")
         print(" Prediction Result")
         print("==============================")
-        print("CVE :", result["CVE_ID"])
-        print("Probability :", f"{probability*100:.2f}%")
-        print("Prediction :", "EXPLOITED" if prediction else "NOT EXPLOITED")
-        print("Risk :", result["Risk"])
+        print(f"CVE                : {result['CVE_ID']}")
+        print(f"Attack Probability : {probability*100:.2f}%")
+        
+        # Nếu có đủ dữ liệu percentile thì hiển thị rõ ràng hơn
+        if self.reference_probs:
+            top_pct = 100.0 - percentile
+            print(f"Percentile         : P{percentile:.2f} (Top {top_pct:.2f}%)")
+            
+        print(f"Decision threshold : {self.threshold:.4f}")
+        print(f"Prediction (Exploit): {'EXPLOITED' if prediction else 'NOT EXPLOITED'}")
+        print(f"Risk               : {result['Risk']}")
+        print("Top nguyên nhân:")
+        for r in reasons[:5]:
+            print(f"  - {r['feature']} = {r['value']} (weight={r['importance_weight']})")
         print("==============================\n")
 
+        # ── Lưu kết quả + reasons ra JSON trong PREDICT_DIR ──
+        os.makedirs(PREDICT_DIR, exist_ok=True)
+        out_path = os.path.join(PREDICT_DIR, f"{data['cve_id']}_result.json")
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+
+        result["_saved_path"] = out_path
         return result
