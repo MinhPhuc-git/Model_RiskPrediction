@@ -5,7 +5,7 @@ from xgboost import XGBClassifier as XGBoostModel
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
 
-from base_model import DataLoaderV4, BaseModelOOP, OUTPUT_DIR, PREDICT_DIR, LABELED_JSON
+from base_model import DataLoaderV4, BaseModelOOP, OUTPUT_DIR
 from base_model import Predictor, find_best_threshold, compute_risk_thresholds
 import os
 
@@ -27,7 +27,7 @@ class XGBoostOOP(BaseModelOOP):
             reg_lambda=1.0,
             objective="binary:logistic",
             eval_metric="aucpr",
-            scale_pos_weight=scale_pos_weight * 2,
+            scale_pos_weight=scale_pos_weight,
             early_stopping_rounds=30,
             random_state=42,
             verbosity=0,
@@ -101,16 +101,10 @@ def _run_predict_only(model_path: str, encoder_path: str, metrics_path: str):
         feature_names=feature_names,
         threshold=tuned_threshold,
         risk_thresholds=risk_thresholds,
-        reference_probs=reference_probs, # Truyền vào để tính Percentile
+        reference_probs=reference_probs,
     )
 
-    if not os.path.isfile(LABELED_JSON):
-        print(f"[WARN] Khong tim thay file LABELED_JSON tai: {LABELED_JSON}")
-        print("[WARN] Bo qua buoc predict_json() vi thieu file input.")
-        return True
-
-    result = predictor.predict_json(LABELED_JSON)
-    print(f"[SAVE] ket qua du doan (kem Reasons) luu tai: {result['_saved_path']}")
+    print(f"[OK] Model loaded thanh cong. San sang du doan qua run_pipeline.py.")
     return True
 
 
@@ -144,7 +138,7 @@ def _run_train_and_predict():
           f"Brier={metrics['brier_score']:.4f}  LogLoss={metrics['log_loss']:.4f}")
 
     val_proba = model.predict_proba(X_val)
-    best = find_best_threshold(y_val, val_proba, metric="f1", beta=1.0)
+    best = find_best_threshold(y_val, val_proba, metric="f1", beta=2.0)
     tuned_threshold = best["threshold"]
     print(f"\n[THRESHOLD] Tune tren validation set -> threshold={tuned_threshold:.4f} "
           f"(val precision={best['precision']:.4f}  val recall={best['recall']:.4f}  "
@@ -212,20 +206,11 @@ def _run_train_and_predict():
         model_path=os.path.join(OUTPUT_DIR, "xgboost", "xgboost_model.pkl"),
         encoder_path=os.path.join(OUTPUT_DIR, "xgboost", "xgboost_encoders.pkl"),
         feature_names=loader.feature_names,
-        threshold=tuned_threshold,  # dùng threshold đã tune, không còn hardcode 0.5
-        risk_thresholds=risk_thresholds,  # RẤT CAO/CAO/TB/THẤP theo percentile
-        reference_probs=val_proba.tolist(), # Truyền thẳng phân phối vừa train
+        threshold=tuned_threshold,
+        risk_thresholds=risk_thresholds,
+        reference_probs=val_proba.tolist(),
     )
-
-    # ── Kiểm tra file JSON input tồn tại trước khi predict (tránh traceback khó hiểu) ──
-    if not os.path.isfile(LABELED_JSON):
-        print(f"[WARN] Khong tim thay file LABELED_JSON tai: {LABELED_JSON}")
-        print("[WARN] Bo qua buoc predict_json() vi thieu file input.")
-        return
-
-    # Truyền thẳng LABELED_JSON vào thay vì os.path.join nối chuỗi thủ công
-    result = predictor.predict_json(LABELED_JSON)
-    print(f"[SAVE] ket qua du doan (kem Reasons) luu tai: {result['_saved_path']}")
+    print(f"[OK] Train va save hoan tat. San sang du doan qua run_pipeline.py.")
 
 
 def main(force_retrain: bool = False):

@@ -19,14 +19,14 @@ warnings.filterwarnings("ignore")
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Lùi 2 cấp thư mục để về thư mục gốc: .../Agent-CollectionData
-_PROJECT_DIR = os.path.abspath(os.path.join(_BASE_DIR, "..", ".."))
+# Lùi 1 cấp thư mục để về thư mục gốc: AI_CYRP
+_PROJECT_DIR = os.path.abspath(os.path.join(_BASE_DIR, ".."))
 
 # Các đường dẫn chuẩn trong dự án
-DATA_TRAIN_CSV = os.path.join(_PROJECT_DIR, "Model Train", "Data Train", "350k-Data_HasExploited.csv")
-OUTPUT_DIR     = os.path.join(_PROJECT_DIR, "Model Train", "Model Result")
-LABELED_JSON   = os.path.join(_PROJECT_DIR, "Model Train", "Label", "agent_data_labeled.json")  # File input
-PREDICT_DIR    = os.path.join(_PROJECT_DIR, "Model Train", "Data User")                         # Folder output
+DATA_TRAIN_CSV = os.path.join(_PROJECT_DIR, "Data Train", "350k-Data_HasExploited.csv")
+OUTPUT_DIR     = os.path.join(_PROJECT_DIR, "Model Result")
+LABELED_JSON   = os.path.join(_PROJECT_DIR, "Label", "agent_data_labeled.json")  # File input
+PREDICT_DIR    = os.path.join(_PROJECT_DIR, "Data User")                         # Folder output
 
 TARGET_COL = "Exploited_Label"
 
@@ -40,6 +40,7 @@ CATEGORICAL_FEATURES = [
     "CVSS_confidentiality",
     "CVSS_integrity",
     "CVSS_availability",
+    "CVSS_cvss_version",
 ]
 
 NUMERICAL_FEATURES = [
@@ -93,7 +94,7 @@ def classify_risk(prob_exploited: float, thresholds: dict | None = None) -> str:
         return "THẤP"
 
 
-def find_best_threshold(y_true, proba, metric: str = "f1", beta: float = 1.0) -> dict:
+def find_best_threshold(y_true, proba, metric: str = "f1", beta: float = 2.0) -> dict:
     precisions, recalls, thresholds = precision_recall_curve(y_true, proba)
     # precision_recall_curve trả về len(thresholds) = len(precisions) - 1
     b2 = beta ** 2
@@ -195,7 +196,7 @@ class BaseModelOOP:
         proba = self._active_model().predict_proba(X)[:, 1]
         return np.clip(proba, 0.0, 1.0)
 
-    def find_best_threshold(self, X, y, metric: str = "f1", beta: float = 1.0) -> dict:
+    def find_best_threshold(self, X, y, metric: str = "f1", beta: float = 2.0) -> dict:
         """Wrapper tiện dụng: tính proba trên (X, y) rồi tìm threshold tối ưu."""
         proba = self.predict_proba(X)
         return find_best_threshold(y, proba, metric=metric, beta=beta)
@@ -283,6 +284,7 @@ class Predictor:
             "CVSS_confidentiality": data["c_label"],
             "CVSS_integrity": data["i_label"],
             "CVSS_availability": data["a_label"],
+            "CVSS_cvss_version": data["cvss_version"],
 
             "CVSS_exploitability_score": data["exploitability_score"],
             "CVSS_impact_score": data["impact_score"],
@@ -331,10 +333,7 @@ class Predictor:
 
         return dict(zip(self.feature_names, importances.tolist()))
 
-    def predict_json(self, json_path: str):
-        with open(json_path, "r", encoding="utf8") as f:
-            data = json.load(f)
-
+    def _predict_data(self, data: dict, verbose: bool = True):
         X, raw_values = self._prepare(data)
 
         probability = float(self.model.predict_proba(X)[0][1])
@@ -358,7 +357,7 @@ class Predictor:
         reasons.sort(key=lambda r: r["importance_weight"], reverse=True)
 
         result = {
-            "CVE_ID": data["cve_id"],
+            "CVE_ID": data.get("cve_id", "Unknown"),
             "Probability": round(probability, 4),
             "Percentile": round(percentile, 2) if self.reference_probs else None,
             "Threshold_Used": self.threshold,
@@ -368,30 +367,64 @@ class Predictor:
             "Reasons": reasons,
         }
 
-        print("\n")
-        print(" Prediction Result")
-        print("==============================")
-        print(f"CVE                : {result['CVE_ID']}")
-        print(f"Attack Probability : {probability*100:.2f}%")
-        
-        # Nếu có đủ dữ liệu percentile thì hiển thị rõ ràng hơn
-        if self.reference_probs:
-            top_pct = 100.0 - percentile
-            print(f"Percentile         : P{percentile:.2f} (Top {top_pct:.2f}%)")
+        if verbose:
+            print("\n")
+            print(" Prediction Result")
+            print("==============================")
+            print(f"CVE                : {result['CVE_ID']}")
+            print(f"Attack Probability : {probability*100:.2f}%")
             
-        print(f"Decision threshold : {self.threshold:.4f}")
-        print(f"Prediction (Exploit): {'EXPLOITED' if prediction else 'NOT EXPLOITED'}")
-        print(f"Risk               : {result['Risk']}")
-        print("Top nguyên nhân:")
-        for r in reasons[:5]:
-            print(f"  - {r['feature']} = {r['value']} (weight={r['importance_weight']})")
-        print("==============================\n")
+            # Nếu có đủ dữ liệu percentile thì hiển thị rõ ràng hơn
+            if self.reference_probs:
+                top_pct = 100.0 - percentile
+                print(f"Percentile         : P{percentile:.2f} (Top {top_pct:.2f}%)")
+                
+            print(f"Decision threshold : {self.threshold:.4f}")
+            print(f"Prediction (Exploit): {'EXPLOITED' if prediction else 'NOT EXPLOITED'}")
+            print(f"Risk               : {result['Risk']}")
+            print("Top nguyên nhân:")
+            for r in reasons[:5]:
+                print(f"  - {r['feature']} = {r['value']} (weight={r['importance_weight']})")
+            print("==============================\n")
 
         # ── Lưu kết quả + reasons ra JSON trong PREDICT_DIR ──
         os.makedirs(PREDICT_DIR, exist_ok=True)
-        out_path = os.path.join(PREDICT_DIR, f"{data['cve_id']}_result.json")
+        out_path = os.path.join(PREDICT_DIR, f"{result['CVE_ID']}_result.json")
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
 
         result["_saved_path"] = out_path
         return result
+
+    def predict_json(self, json_path: str, verbose: bool = True):
+        with open(json_path, "r", encoding="utf8") as f:
+            data = json.load(f)
+        return self._predict_data(data, verbose=verbose)
+
+    def predict_extracted_row(self, row: dict, verbose: bool = True):
+        data = {}
+        data["cve_id"] = row.get("cve_id", "")
+        
+        # Uu tien v3, fallback v2
+        data["av_label"] = row.get("cvss_v3_attack_vector") or row.get("cvss_v2_access_vector") or "unknown"
+        data["ac_label"] = row.get("cvss_v3_attack_complexity") or row.get("cvss_v2_access_complexity") or "unknown"
+        data["pr_label"] = row.get("cvss_v3_privileges_required") or row.get("cvss_v2_authentication") or "unknown"
+        data["ui_label"] = row.get("cvss_v3_user_interaction") or "unknown"
+        data["scope_label"] = row.get("cvss_v3_scope") or "unknown"
+        data["c_label"] = row.get("cvss_v3_confidentiality_impact") or row.get("cvss_v2_confidentiality_impact") or "unknown"
+        data["i_label"] = row.get("cvss_v3_integrity_impact") or row.get("cvss_v2_integrity_impact") or "unknown"
+        data["a_label"] = row.get("cvss_v3_availability_impact") or row.get("cvss_v2_availability_impact") or "unknown"
+        data["cvss_version"] = row.get("cvss_final_version") or "unknown"
+        
+        def to_float(val, default=0.0):
+            try:
+                if val == "" or val is None: return default
+                return float(val)
+            except:
+                return default
+
+        data["exploitability_score"] = to_float(row.get("cvss_final_exploitability_subscore"))
+        data["impact_score"] = to_float(row.get("cvss_final_impact_subscore"))
+        data["base_score"] = to_float(row.get("cvss_final_score"))
+
+        return self._predict_data(data, verbose=verbose)

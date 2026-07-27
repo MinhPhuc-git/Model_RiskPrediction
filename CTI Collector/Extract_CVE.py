@@ -7,6 +7,24 @@ import argparse
 import concurrent.futures as cf
 from pathlib import Path
 
+try:
+    from cvss31_calculator import compute_from_vector_string as compute_v31
+    from cvss30_calculator import compute_from_vector_string_v30 as compute_v30
+    from cvss20_calculator import compute_from_vector_string_v2 as compute_v20
+except ImportError:
+    print(
+        "[LỖI] Không tìm thấy đủ cvss20_calculator.py / cvss30_calculator.py / "
+        "cvss31_calculator.py. Cả 3 file này cần nằm CÙNG thư mục với extract_cve.py "
+        "để tính điểm CVSS đúng công thức cho từng phiên bản (2.0 / 3.0 / 3.1) ngay khi quét.",
+        file=sys.stderr,
+    )
+    raise
+
+# Thu tu uu tien khi chon 1 "diem CVSS cuoi cung" cho moi CVE: 3.1 truoc, roi 3.0,
+# roi moi den 2.0. Tat ca cac phien ban co mat deu duoc TU TINH VA KIEM TRA (doi chieu
+# voi baseScore cong bo trong JSON goc) - khong chi rieng phien ban duoc chon.
+CVSS_VERSION_PRIORITY = ("v31", "v30", "v2")
+
 TAG_PRIORITY = {
     "patch": (1, "Patch"),
     "vendor-advisory": (2, "Vendor Advisory"),
@@ -21,7 +39,7 @@ MAX_LINKS_IN_SUMMARY = 10
 MAX_AFFECTED_ITEMS = 20
 MAX_CPE_ITEMS = 15
 
-DEFAULT_WORKERS = min(32, (os.cpu_count() or 4) * 4)
+DEFAULT_WORKERS = min(64, (os.cpu_count() or 4) * 4)
 
 CSV_FIELDNAMES = [
     "cve_id",
@@ -36,9 +54,70 @@ CSV_FIELDNAMES = [
     "cvss_v2_score",
     "cvss_v2_vector",
     "cvss_v2_severity",
+    "cvss_v2_access_vector",
+    "cvss_v2_access_complexity",
+    "cvss_v2_authentication",
+    "cvss_v2_confidentiality_impact",
+    "cvss_v2_integrity_impact",
+    "cvss_v2_availability_impact",
+    "cvss_v2_exploitability_score",
+    "cvss_v2_impact_score",
+    "cvss_v2_computed_base_score",
+    "cvss_v2_computed_impact_subscore",
+    "cvss_v2_computed_exploitability_subscore",
+    "cvss_v2_computed_temporal_score",
+    "cvss_v2_computed_environmental_score",
+    "cvss_v2_score_mismatch",
+    "cvss_v2_compute_error",
     "cvss_v3_score",
     "cvss_v3_vector",
     "cvss_v3_severity",
+    "cvss_v3_version",
+    "cvss_v3_attack_vector",
+    "cvss_v3_attack_complexity",
+    "cvss_v3_privileges_required",
+    "cvss_v3_user_interaction",
+    "cvss_v3_scope",
+    "cvss_v3_confidentiality_impact",
+    "cvss_v3_integrity_impact",
+    "cvss_v3_availability_impact",
+    # (da bo "cvss_v3_exploitability_score" va "cvss_v3_impact_score" lay tu JSON -
+    #  vi da co ban TU TINH ben duoi (cvss_v3_computed_exploitability_subscore /
+    #  cvss_v3_computed_impact_subscore), khong can lay trung tu JSON nua)
+    "cvss_v3_computed_base_score",
+    "cvss_v3_computed_impact_subscore",
+    "cvss_v3_computed_exploitability_subscore",
+    "cvss_v3_computed_temporal_score",
+    "cvss_v3_computed_environmental_score",
+    "cvss_v3_score_mismatch",
+    "cvss_v3_compute_error",
+    # Neu 1 CVE co CA cvssV3_0 LAN cvssV3_1 (hiem, vd CNA cho 3.1 nhung mot ADP khac
+    # con luu 3.0), cac cot cvss_v3_* o tren se uu tien phan anh 3.1. Cac cot rieng
+    # ben duoi giup thay ca 2 ban ghi (neu co) de doi chieu, khong bo sot du lieu nao.
+    "cvss_v30_found",
+    "cvss_v30_vector",
+    "cvss_v30_score",
+    "cvss_v30_computed_base_score",
+    "cvss_v30_score_mismatch",
+    "cvss_v30_compute_error",
+    "cvss_v31_found",
+    "cvss_v31_vector",
+    "cvss_v31_score",
+    "cvss_v31_computed_base_score",
+    "cvss_v31_score_mismatch",
+    "cvss_v31_compute_error",
+    # "Diem CVSS cuoi cung" duoc chon theo dung thu tu uu tien yeu cau: 3.1 neu co ->
+    # giam dan xuong 3.0 -> 2.0. Day la cot nen dung de xep hang/loc muc do nghiem
+    # trong cho tung CVE (thay vi tu chon giua cvss_v3_* va cvss_v2_*).
+    "cvss_final_version",
+    "cvss_final_vector",
+    "cvss_final_score",
+    "cvss_final_severity",
+    "cvss_final_impact_subscore",
+    "cvss_final_exploitability_subscore",
+    "cvss_final_temporal_score",
+    "cvss_final_environmental_score",
+    "cvss_final_compute_error",
     "affected_products",
     "affected_cpes",
     "top_priority_type",
@@ -88,6 +167,54 @@ def cvss_v2_severity(score):
     return "NONE"
 
 
+def cvss_v3_severity_from_score(score):
+    """Fallback severity cho CVSS v3.0/3.1 khi JSON khong co san 'baseSeverity'
+    (thang do giong nhau cho ca 2 phien ban v3)."""
+    if score is None or score == "":
+        return ""
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        return ""
+    if s == 0:
+        return "NONE"
+    if s < 4.0:
+        return "LOW"
+    if s < 7.0:
+        return "MEDIUM"
+    if s < 9.0:
+        return "HIGH"
+    return "CRITICAL"
+
+
+def classify_cvss_key(key_lower, value):
+    """Xac dinh 1 block metric trong 'metrics[]' la CVSS v2.0, v3.0 hay v3.1.
+    Uu tien doc field 'version' ben trong (theo dung CVE JSON 5.0 schema: field
+    ten 'cvssV2_0'/'cvssV3_0'/'cvssV3_1', ben trong co 'version': '2.0'/'3.0'/'3.1'),
+    va dung ten key lam phuong an du phong neu 'version' bi thieu/sai."""
+    if key_lower.startswith("cvssv4") or key_lower == "other":
+        return None  # CVSS v4.0 (hoac format khac) - ngoai pham vi script nay
+
+    version = str(value.get("version") or "").strip()
+
+    if key_lower.startswith("cvssv2"):
+        return "v2"
+
+    if key_lower.startswith("cvssv3"):
+        if version.startswith("3.1"):
+            return "v31"
+        if version.startswith("3.0"):
+            return "v30"
+        # 'version' thieu/khong hop le -> doan theo ten key
+        if "3_1" in key_lower or key_lower.endswith("31"):
+            return "v31"
+        if "3_0" in key_lower or key_lower.endswith("30"):
+            return "v30"
+        return None  # khong the xac dinh chac chan phien ban -> bo qua, an toan hon doan bua
+
+    return None
+
+
 def get_all_containers(data):
     containers = data.get("containers", {})
     result = []
@@ -127,22 +254,59 @@ def extract_cwe_ids(container):
     return out
 
 
+def _fields_v2(value):
+    return {
+        "score": value.get("baseScore"),
+        "vector": value.get("vectorString") or "",
+        "access_vector": value.get("accessVector") or "",
+        "access_complexity": value.get("accessComplexity") or "",
+        "authentication": value.get("authentication") or "",
+        "confidentiality_impact": value.get("confidentialityImpact") or "",
+        "integrity_impact": value.get("integrityImpact") or "",
+        "availability_impact": value.get("availabilityImpact") or "",
+        "exploitability_score": value.get("exploitabilityScore", ""),
+        "impact_score": value.get("impactScore", ""),
+    }
+
+
+def _fields_v3(value):
+    return {
+        "score": value.get("baseScore"),
+        "vector": value.get("vectorString") or "",
+        "severity": value.get("baseSeverity") or "",
+        "version": value.get("version") or "",
+        "attack_vector": value.get("attackVector") or "",
+        "attack_complexity": value.get("attackComplexity") or "",
+        "privileges_required": value.get("privilegesRequired") or "",
+        "user_interaction": value.get("userInteraction") or "",
+        "scope": value.get("scope") or "",
+        "confidentiality_impact": value.get("confidentialityImpact") or "",
+        "integrity_impact": value.get("integrityImpact") or "",
+        "availability_impact": value.get("availabilityImpact") or "",
+    }
+
+
 def extract_cvss_metrics(container):
-    v2_score = v2_vector = v3_score = v3_vector = v3_severity = None
+    """Quet 'metrics[]' cua 1 container (cna hoac adp), tra ve toi da 1 block cho
+    moi phien ban CVSS (v2, v30, v31) tim thay trong CHINH container nay. Neu 1
+    container co nhieu block cung phien ban (hiem), lay block dau tien."""
+    result = {"v2": None, "v30": None, "v31": None}
+
     for metric in container.get("metrics", []) or []:
         if not isinstance(metric, dict):
             continue
         for key, value in metric.items():
             if not isinstance(value, dict):
                 continue
-            if key.startswith("cvssV2") and v2_score is None:
-                v2_score = value.get("baseScore")
-                v2_vector = value.get("vectorString") or ""
-            elif key.startswith("cvssV3") and v3_score is None:
-                v3_score = value.get("baseScore")
-                v3_vector = value.get("vectorString") or ""
-                v3_severity = value.get("baseSeverity") or ""
-    return v2_score, v2_vector, v3_score, v3_vector, v3_severity
+            kind = classify_cvss_key(key.lower(), value)
+            if kind == "v2" and result["v2"] is None:
+                result["v2"] = _fields_v2(value)
+            elif kind == "v30" and result["v30"] is None:
+                result["v30"] = _fields_v3(value)
+            elif kind == "v31" and result["v31"] is None:
+                result["v31"] = _fields_v3(value)
+
+    return result
 
 
 def summarize_affected(container):
@@ -236,27 +400,113 @@ def extract_upgrade_versions(container):
     return out
 
 
+def _compute_and_check(vector, published_score, compute_fn):
+    """Goi dung calculator (v2.0 / v3.0 / v3.1) cho 1 vectorString, tra ve diem tu
+    tinh VA doi chieu voi baseScore cong bo trong JSON goc (lech > 0.1 -> mismatch).
+    Dung chung cho ca 3 nhanh de khong lap code 3 lan."""
+    result = {"base": "", "impact": "", "exploit": "", "temporal": "", "environmental": "",
+              "mismatch": "", "error": ""}
+    if not vector:
+        return result
+
+    calc = compute_fn(vector, cve_id="")
+    if calc.get("parse_error"):
+        result["error"] = calc["parse_error"]
+        return result
+
+    result["base"] = calc["base_score"]
+    result["impact"] = calc["impact_subscore"]
+    result["exploit"] = calc["exploitability_subscore"]
+    result["temporal"] = calc["temporal_score"]
+    result["environmental"] = calc["environmental_score"]
+
+    if published_score is not None:
+        try:
+            result["mismatch"] = "yes" if abs(float(published_score) - result["base"]) > 0.1 else "no"
+        except (TypeError, ValueError):
+            result["mismatch"] = ""
+    return result
+
+
 def extract_technical_info(data):
     meta = data.get("cveMetadata", {}) or {}
     description = ""
     cwe_ids = []
-    v2_score = v2_vector = v3_score = v3_vector = v3_severity = None
     products = []
     cpes = []
+
+    cvss_v2 = None
+    cvss_v30 = None
+    cvss_v31 = None
 
     containers = get_all_containers(data)
     for label, container in containers:
         if not description:
             description = pick_description(container)
         cwe_ids.extend(extract_cwe_ids(container))
+
         cvss = extract_cvss_metrics(container)
-        if v2_score is None and cvss[0] is not None:
-            v2_score, v2_vector = cvss[0], cvss[1]
-        if v3_score is None and cvss[2] is not None:
-            v3_score, v3_vector, v3_severity = cvss[2], cvss[3], cvss[4]
+        if cvss_v2 is None and cvss["v2"] is not None:
+            cvss_v2 = cvss["v2"]
+        if cvss_v30 is None and cvss["v30"] is not None:
+            cvss_v30 = cvss["v30"]
+        if cvss_v31 is None and cvss["v31"] is not None:
+            cvss_v31 = cvss["v31"]
+
         p, c = summarize_affected(container)
         products.extend(p)
         cpes.extend(c)
+
+    cvss_v2 = cvss_v2 or {}
+    cvss_v30 = cvss_v30 or {}
+    cvss_v31 = cvss_v31 or {}
+
+    v2_score = cvss_v2.get("score")
+    v30_score = cvss_v30.get("score")
+    v31_score = cvss_v31.get("score")
+
+    # --- Tinh VA kiem tra DOC LAP ca 3 phien ban, bat ke phien ban nao se duoc
+    # "chon" ben duoi. Day chinh la phan "kiem tra toan bo truoc khi lam". ---
+    check_v2 = _compute_and_check(cvss_v2.get("vector", ""), v2_score, compute_v20)
+    check_v30 = _compute_and_check(cvss_v30.get("vector", ""), v30_score, compute_v30)
+    check_v31 = _compute_and_check(cvss_v31.get("vector", ""), v31_score, compute_v31)
+
+    # --- Cac cot "cvss_v3_*" (giu ten cu de tuong thich nguoc): neu 1 CVE co CA
+    # 3.0 lan 3.1, uu tien hien thi 3.1 (dung thu tu uu tien yeu cau). ---
+    if cvss_v31.get("vector"):
+        v3_display, v3_check = cvss_v31, check_v31
+    elif cvss_v30.get("vector"):
+        v3_display, v3_check = cvss_v30, check_v30
+    else:
+        v3_display, v3_check = {}, check_v31  # rong ca hai -> check rong
+
+    v3_score_display = v3_display.get("score")
+    v3_severity_display = v3_display.get("severity") or cvss_v3_severity_from_score(
+        v3_check["base"] if v3_check["base"] != "" else v3_score_display
+    )
+
+    # --- "cvss_final_*": diem duoc CHON theo dung thu tu uu tien yeu cau
+    # 3.1 -> 3.0 -> 2.0, chi roi xuong phien ban thap hon khi phien ban cao hon
+    # HOAN TOAN khong co vectorString (khong phai vi loi parse). ---
+    if cvss_v31.get("vector"):
+        final_version, final_vector, final_check = "3.1", cvss_v31["vector"], check_v31
+        final_severity = cvss_v31.get("severity") or cvss_v3_severity_from_score(final_check["base"])
+        final_published = v31_score
+    elif cvss_v30.get("vector"):
+        final_version, final_vector, final_check = "3.0", cvss_v30["vector"], check_v30
+        final_severity = cvss_v30.get("severity") or cvss_v3_severity_from_score(final_check["base"])
+        final_published = v30_score
+    elif cvss_v2.get("vector"):
+        final_version, final_vector, final_check = "2.0", cvss_v2["vector"], check_v2
+        final_severity = cvss_v2_severity(final_check["base"] if final_check["base"] != "" else v2_score)
+        final_published = v2_score
+    else:
+        final_version, final_vector, final_check, final_published = "", "", check_v2, None
+        final_severity = ""
+
+    final_score = final_check["base"] if final_check["base"] != "" else (
+        "" if final_published is None else final_published
+    )
 
     return {
         "state": meta.get("state", ""),
@@ -265,12 +515,70 @@ def extract_technical_info(data):
         "assigner": meta.get("assignerShortName", ""),
         "description_en": description,
         "cwe_ids": join_field(cwe_ids),
+
         "cvss_v2_score": "" if v2_score is None else v2_score,
-        "cvss_v2_vector": v2_vector or "",
+        "cvss_v2_vector": cvss_v2.get("vector", ""),
         "cvss_v2_severity": cvss_v2_severity(v2_score),
-        "cvss_v3_score": "" if v3_score is None else v3_score,
-        "cvss_v3_vector": v3_vector or "",
-        "cvss_v3_severity": v3_severity or "",
+        "cvss_v2_access_vector": cvss_v2.get("access_vector", ""),
+        "cvss_v2_access_complexity": cvss_v2.get("access_complexity", ""),
+        "cvss_v2_authentication": cvss_v2.get("authentication", ""),
+        "cvss_v2_confidentiality_impact": cvss_v2.get("confidentiality_impact", ""),
+        "cvss_v2_integrity_impact": cvss_v2.get("integrity_impact", ""),
+        "cvss_v2_availability_impact": cvss_v2.get("availability_impact", ""),
+        "cvss_v2_exploitability_score": cvss_v2.get("exploitability_score", ""),
+        "cvss_v2_impact_score": cvss_v2.get("impact_score", ""),
+        "cvss_v2_computed_base_score": check_v2["base"],
+        "cvss_v2_computed_impact_subscore": check_v2["impact"],
+        "cvss_v2_computed_exploitability_subscore": check_v2["exploit"],
+        "cvss_v2_computed_temporal_score": check_v2["temporal"],
+        "cvss_v2_computed_environmental_score": check_v2["environmental"],
+        "cvss_v2_score_mismatch": check_v2["mismatch"],
+        "cvss_v2_compute_error": check_v2["error"],
+
+        "cvss_v3_score": "" if v3_score_display is None else v3_score_display,
+        "cvss_v3_vector": v3_display.get("vector", ""),
+        "cvss_v3_severity": v3_severity_display,
+        "cvss_v3_version": v3_display.get("version", ""),
+        "cvss_v3_attack_vector": v3_display.get("attack_vector", ""),
+        "cvss_v3_attack_complexity": v3_display.get("attack_complexity", ""),
+        "cvss_v3_privileges_required": v3_display.get("privileges_required", ""),
+        "cvss_v3_user_interaction": v3_display.get("user_interaction", ""),
+        "cvss_v3_scope": v3_display.get("scope", ""),
+        "cvss_v3_confidentiality_impact": v3_display.get("confidentiality_impact", ""),
+        "cvss_v3_integrity_impact": v3_display.get("integrity_impact", ""),
+        "cvss_v3_availability_impact": v3_display.get("availability_impact", ""),
+        "cvss_v3_computed_base_score": v3_check["base"],
+        "cvss_v3_computed_impact_subscore": v3_check["impact"],
+        "cvss_v3_computed_exploitability_subscore": v3_check["exploit"],
+        "cvss_v3_computed_temporal_score": v3_check["temporal"],
+        "cvss_v3_computed_environmental_score": v3_check["environmental"],
+        "cvss_v3_score_mismatch": v3_check["mismatch"],
+        "cvss_v3_compute_error": v3_check["error"],
+
+        "cvss_v30_found": "yes" if cvss_v30.get("vector") else "no",
+        "cvss_v30_vector": cvss_v30.get("vector", ""),
+        "cvss_v30_score": "" if v30_score is None else v30_score,
+        "cvss_v30_computed_base_score": check_v30["base"],
+        "cvss_v30_score_mismatch": check_v30["mismatch"],
+        "cvss_v30_compute_error": check_v30["error"],
+
+        "cvss_v31_found": "yes" if cvss_v31.get("vector") else "no",
+        "cvss_v31_vector": cvss_v31.get("vector", ""),
+        "cvss_v31_score": "" if v31_score is None else v31_score,
+        "cvss_v31_computed_base_score": check_v31["base"],
+        "cvss_v31_score_mismatch": check_v31["mismatch"],
+        "cvss_v31_compute_error": check_v31["error"],
+
+        "cvss_final_version": final_version,
+        "cvss_final_vector": final_vector,
+        "cvss_final_score": final_score,
+        "cvss_final_severity": final_severity,
+        "cvss_final_impact_subscore": final_check["impact"],
+        "cvss_final_exploitability_subscore": final_check["exploit"],
+        "cvss_final_temporal_score": final_check["temporal"],
+        "cvss_final_environmental_score": final_check["environmental"],
+        "cvss_final_compute_error": final_check["error"],
+
         "affected_products": join_field(products[:MAX_AFFECTED_ITEMS]),
         "affected_cpes": join_field(cpes[:MAX_CPE_ITEMS]),
     }
@@ -438,8 +746,6 @@ def collect_files(path, limit=None, cve_list_path=None):
     return files, None, json_index
 
 def _process_one_safe(path):
-    """Wrapper an toan de chay trong 1 luong: bat loi thay vi lam crash ca pool.
-    Tra ve (True, row) neu thanh cong, hoac (False, (duong_dan, thong_bao_loi))."""
     try:
         return True, process_cve_file(path)
     except Exception as e:
@@ -447,12 +753,7 @@ def _process_one_safe(path):
 
 
 def run_concurrent(files, workers, label="file"):
-    """
-    Chay process_cve_file song song cho danh sach `files`, tra ve list ket qua
-    (ok, result) THEO DUNG THU TU cua `files` dau vao (ThreadPoolExecutor.map
-    luon giu nguyen thu tu dau vao du cac luong hoan tat khong theo thu tu).
-    In tien do dinh ky de theo doi voi tap du lieu lon (hang tram nghin file).
-    """
+
     if not files:
         return []
 
@@ -570,16 +871,83 @@ def main():
             file=sys.stderr,
         )
 
+    score_mismatch_count = sum(1 for r in rows if r.get("cvss_v3_score_mismatch") == "yes")
+    if score_mismatch_count:
+        print(
+            f"[!] Cảnh báo: {score_mismatch_count} CVE có base_score công bố lệch >0.1 điểm "
+            f"so với điểm tự tính từ vectorString v3 hiển thị (cột cvss_v3_score_mismatch=yes). "
+            f"Có thể do vectorString/baseScore trong JSON gốc không khớp nhau.",
+            file=sys.stderr,
+        )
+
+    v2_mismatch_count = sum(1 for r in rows if r.get("cvss_v2_score_mismatch") == "yes")
+    if v2_mismatch_count:
+        print(
+            f"[!] Cảnh báo: {v2_mismatch_count} CVE có CVSS v2 base_score công bố lệch >0.1 điểm "
+            f"so với điểm tự tính (cột cvss_v2_score_mismatch=yes).",
+            file=sys.stderr,
+        )
+
+    both_v3_count = sum(1 for r in rows if r.get("cvss_v30_found") == "yes" and r.get("cvss_v31_found") == "yes")
+    if both_v3_count:
+        print(
+            f"[i] Ghi chú: {both_v3_count} CVE có CẢ vectorString CVSS v3.0 lẫn v3.1 "
+            f"(xem cột cvss_v30_* / cvss_v31_* để đối chiếu). Cột cvss_v3_* đã ưu tiên hiển thị v3.1.",
+            file=sys.stderr,
+        )
+
+    compute_error_count = sum(
+        1 for r in rows
+        if r.get("cvss_v3_compute_error") or r.get("cvss_v2_compute_error")
+        or r.get("cvss_v30_compute_error") or r.get("cvss_v31_compute_error")
+    )
+    if compute_error_count:
+        print(
+            f"[!] Cảnh báo: {compute_error_count} CVE có ít nhất 1 vectorString (v2/v3.0/v3.1) "
+            f"không parse được, nên thiếu điểm tự tính cho phiên bản đó.",
+            file=sys.stderr,
+        )
+
+    final_v31 = sum(1 for r in rows if r.get("cvss_final_version") == "3.1")
+    final_v30 = sum(1 for r in rows if r.get("cvss_final_version") == "3.0")
+    final_v2 = sum(1 for r in rows if r.get("cvss_final_version") == "2.0")
+    final_none = sum(1 for r in rows if r.get("cvss_final_version") == "")
+    print(
+        f"[*] Điểm CVSS cuối cùng (ưu tiên 3.1 -> 3.0 -> 2.0, cột cvss_final_*): "
+        f"{final_v31} dùng v3.1, {final_v30} dùng v3.0, {final_v2} dùng v2.0, "
+        f"{final_none} không có vectorString nào."
+    )
+
     for row in rows[:20]:
         print("=" * 90)
         print(f"CVE: {row['cve_id']} [{row.get('json_status', 'found')}]")
         if row.get("description_en"):
             desc = row["description_en"]
             print(f"  Mô tả: {desc[:160]}{'...' if len(desc) > 160 else ''}")
+        if row.get("cvss_final_version"):
+            print(
+                f"  CVSS được chọn (v{row['cvss_final_version']}, ưu tiên 3.1->3.0->2.0): "
+                f"{row['cvss_final_score']} ({row['cvss_final_severity']}) {row['cvss_final_vector']}"
+            )
+            if row.get("cvss_final_compute_error"):
+                print(f"    -> [WARN] Không tính được điểm: {row['cvss_final_compute_error']}")
         if row.get("cvss_v3_score") != "":
-            print(f"  CVSS v3: {row['cvss_v3_score']} ({row['cvss_v3_severity']}) {row['cvss_v3_vector']}")
+            print(f"  CVSS v3 ({row.get('cvss_v3_version') or '?'}): {row['cvss_v3_score']} ({row['cvss_v3_severity']}) {row['cvss_v3_vector']}")
+            print(f"    AV={row['cvss_v3_attack_vector']}  AC={row['cvss_v3_attack_complexity']}  "
+                  f"PR={row['cvss_v3_privileges_required']}  UI={row['cvss_v3_user_interaction']}  "
+                  f"Scope={row['cvss_v3_scope']}  C={row['cvss_v3_confidentiality_impact']}  "
+                  f"I={row['cvss_v3_integrity_impact']}  A={row['cvss_v3_availability_impact']}")
+            if row.get("cvss_v3_computed_base_score") != "":
+                mismatch_note = "  [!] LECH VOI DIEM CONG BO" if row.get("cvss_v3_score_mismatch") == "yes" else ""
+                print(f"    -> Tu tinh: base={row['cvss_v3_computed_base_score']}  "
+                      f"impact_subscore={row['cvss_v3_computed_impact_subscore']}  "
+                      f"exploitability_subscore={row['cvss_v3_computed_exploitability_subscore']}{mismatch_note}")
+            elif row.get("cvss_v3_compute_error"):
+                print(f"    -> [WARN] Khong tinh duoc diem: {row['cvss_v3_compute_error']}")
         elif row.get("cvss_v2_score") != "":
             print(f"  CVSS v2: {row['cvss_v2_score']} ({row['cvss_v2_severity']}) {row['cvss_v2_vector']}")
+            print(f"    AV={row['cvss_v2_access_vector']}  AC={row['cvss_v2_access_complexity']}  "
+                  f"Au={row['cvss_v2_authentication']}")
         if row.get("top_priority_type"):
             print(f"  Khắc phục ưu tiên: [{row['top_priority_type']}] {row['top_priority_url']}")
         elif row.get("json_status") == "found":
