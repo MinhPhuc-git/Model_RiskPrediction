@@ -351,19 +351,27 @@ class Predictor:
             reasons.append({
                 "feature": feat,
                 "value": raw_values.get(feat),
-                "importance_weight": round(importance_map.get(feat, 0.0), 6),
+                "importance_weight": round(importance_map.get(feat, 0.0), 3),
             })
         # sắp xếp theo trọng số giảm dần -> nguyên nhân ảnh hưởng nhiều nhất lên trên
         reasons.sort(key=lambda r: r["importance_weight"], reverse=True)
 
+        formatted_thresholds = None
+        if self.risk_thresholds:
+            formatted_thresholds = dict(self.risk_thresholds)
+            for k in ["medium_threshold", "high_threshold", "critical_threshold"]:
+                if k in formatted_thresholds and isinstance(formatted_thresholds[k], float):
+                    formatted_thresholds[k] = round(formatted_thresholds[k], 3)
+
         result = {
             "CVE_ID": data.get("cve_id", "Unknown"),
+            "CWE_ID": data.get("cwe_id", "Unknown"),
             "Probability": round(probability, 4),
             "Percentile": round(percentile, 2) if self.reference_probs else None,
             "Threshold_Used": self.threshold,
             "Prediction": prediction,
             "Risk": risk,
-            "Risk_Thresholds_Used": self.risk_thresholds,
+            "Risk_Thresholds_Used": formatted_thresholds,
             "Reasons": reasons,
         }
 
@@ -404,6 +412,7 @@ class Predictor:
     def predict_extracted_row(self, row: dict, verbose: bool = True):
         data = {}
         data["cve_id"] = row.get("cve_id", "")
+        data["cwe_id"] = row.get("cwe_id", "Unknown")
         
         # Uu tien v3, fallback v2
         data["av_label"] = row.get("cvss_v3_attack_vector") or row.get("cvss_v2_access_vector") or "unknown"
